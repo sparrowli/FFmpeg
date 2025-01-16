@@ -38,7 +38,7 @@
 #include "mathops.h"
 #include "ffv1.h"
 #include "progressframe.h"
-#include "refstruct.h"
+#include "libavutil/refstruct.h"
 #include "thread.h"
 
 static inline av_flatten int get_symbol_inline(RangeCoder *c, uint8_t *state,
@@ -120,9 +120,8 @@ static int is_input_end(RangeCoder *c, GetBitContext *gb, int ac)
 static int decode_plane(FFV1Context *f, FFV1SliceContext *sc,
                         GetBitContext *gb,
                         uint8_t *src, int w, int h, int stride, int plane_index,
-                         int pixel_stride)
+                        int pixel_stride, int ac)
 {
-    const int ac = f->ac;
     int x, y;
     int16_t *sample[2];
     sample[0] = sc->sample_buffer + 3;
@@ -273,6 +272,7 @@ static int decode_slice(AVCodecContext *c, void *arg)
     AVFrame * const p = f->picture.f;
     const int      si = sc - f->slices;
     GetBitContext gb;
+    int ac = f->ac || sc->slice_coding_mode == 1;
 
     if (!(p->flags & AV_FRAME_FLAG_KEY) && f->last_picture.f)
         ff_progress_frame_await(&f->last_picture, si);
@@ -305,7 +305,7 @@ static int decode_slice(AVCodecContext *c, void *arg)
     x      = sc->slice_x;
     y      = sc->slice_y;
 
-    if (f->ac == AC_GOLOMB_RICE) {
+    if (ac == AC_GOLOMB_RICE) {
         if (f->version == 3 && f->micro_version > 1 || f->version > 3)
             get_rac(&sc->c, (uint8_t[]) { 129 });
         sc->ac_byte_count = f->version > 2 || (!x && !y) ? sc->c.bytestream - sc->c.bytestream_start - 1 : 0;
@@ -320,17 +320,17 @@ static int decode_slice(AVCodecContext *c, void *arg)
         const int chroma_height = AV_CEIL_RSHIFT(height, f->chroma_v_shift);
         const int cx            = x >> f->chroma_h_shift;
         const int cy            = y >> f->chroma_v_shift;
-        decode_plane(f, sc, &gb, p->data[0] + ps*x + y*p->linesize[0], width, height, p->linesize[0], 0, 1);
+        decode_plane(f, sc, &gb, p->data[0] + ps*x + y*p->linesize[0], width, height, p->linesize[0], 0, 1, ac);
 
         if (f->chroma_planes) {
-            decode_plane(f, sc, &gb, p->data[1] + ps*cx+cy*p->linesize[1], chroma_width, chroma_height, p->linesize[1], 1, 1);
-            decode_plane(f, sc, &gb, p->data[2] + ps*cx+cy*p->linesize[2], chroma_width, chroma_height, p->linesize[2], 1, 1);
+            decode_plane(f, sc, &gb, p->data[1] + ps*cx+cy*p->linesize[1], chroma_width, chroma_height, p->linesize[1], 1, 1, ac);
+            decode_plane(f, sc, &gb, p->data[2] + ps*cx+cy*p->linesize[2], chroma_width, chroma_height, p->linesize[2], 1, 1, ac);
         }
         if (f->transparency)
-            decode_plane(f, sc, &gb, p->data[3] + ps*x + y*p->linesize[3], width, height, p->linesize[3], (f->version >= 4 && !f->chroma_planes) ? 1 : 2, 1);
+            decode_plane(f, sc, &gb, p->data[3] + ps*x + y*p->linesize[3], width, height, p->linesize[3], (f->version >= 4 && !f->chroma_planes) ? 1 : 2, 1, ac);
     } else if (f->colorspace == 0) {
-         decode_plane(f, sc, &gb, p->data[0] + ps*x + y*p->linesize[0]    , width, height, p->linesize[0], 0, 2);
-         decode_plane(f, sc, &gb, p->data[0] + ps*x + y*p->linesize[0] + 1, width, height, p->linesize[0], 1, 2);
+         decode_plane(f, sc, &gb, p->data[0] + ps*x + y*p->linesize[0]    , width, height, p->linesize[0], 0, 2, ac);
+         decode_plane(f, sc, &gb, p->data[0] + ps*x + y*p->linesize[0] + 1, width, height, p->linesize[0], 1, 2, ac);
     } else if (f->use32bit) {
         uint8_t *planes[4] = { p->data[0] + ps * x + y * p->linesize[0],
                                p->data[1] + ps * x + y * p->linesize[1],
@@ -344,7 +344,7 @@ static int decode_slice(AVCodecContext *c, void *arg)
                                p->data[3] + ps * x + y * p->linesize[3] };
         decode_rgb_frame(f, sc, &gb, planes, width, height, p->linesize);
     }
-    if (f->ac != AC_GOLOMB_RICE && f->version > 2) {
+    if (ac != AC_GOLOMB_RICE && f->version > 2) {
         int v;
         get_rac(&sc->c, (uint8_t[]) { 129 });
         v = sc->c.bytestream_end - sc->c.bytestream - 2 - 5*!!f->ec;
@@ -780,8 +780,8 @@ static int read_header(FFV1Context *f)
         return AVERROR_INVALIDDATA;
     }
 
-    ff_refstruct_unref(&f->slice_damaged);
-    f->slice_damaged = ff_refstruct_allocz(f->slice_count * sizeof(*f->slice_damaged));
+    av_refstruct_unref(&f->slice_damaged);
+    f->slice_damaged = av_refstruct_allocz(f->slice_count * sizeof(*f->slice_damaged));
     if (!f->slice_damaged)
         return AVERROR(ENOMEM);
 
@@ -810,7 +810,7 @@ static int read_header(FFV1Context *f)
                         && (unsigned)sc->slice_y + (uint64_t)sc->slice_height <= f->height);
         }
 
-        ff_refstruct_unref(&sc->plane);
+        av_refstruct_unref(&sc->plane);
         sc->plane = ff_ffv1_planes_alloc();
         if (!sc->plane)
             return AVERROR(ENOMEM);
@@ -1059,7 +1059,7 @@ static int update_thread_context(AVCodecContext *dst, const AVCodecContext *src)
         FFV1SliceContext       *sc  = &fdst->slices[i];
         const FFV1SliceContext *sc0 = &fsrc->slices[i];
 
-        ff_refstruct_replace(&sc->plane, sc0->plane);
+        av_refstruct_replace(&sc->plane, sc0->plane);
 
         if (fsrc->version < 3) {
             sc->slice_x             = sc0->slice_x;
@@ -1069,7 +1069,7 @@ static int update_thread_context(AVCodecContext *dst, const AVCodecContext *src)
         }
     }
 
-    ff_refstruct_replace(&fdst->slice_damaged, fsrc->slice_damaged);
+    av_refstruct_replace(&fdst->slice_damaged, fsrc->slice_damaged);
 
     av_assert1(fdst->max_slice_count == fsrc->max_slice_count);
 

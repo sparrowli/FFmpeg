@@ -480,8 +480,8 @@ typedef struct HEVCLayerContext {
     uint8_t                *sao_pixel_buffer_h[3];
     uint8_t                *sao_pixel_buffer_v[3];
 
-    struct FFRefStructPool *tab_mvf_pool;
-    struct FFRefStructPool *rpl_tab_pool;
+    struct AVRefStructPool *tab_mvf_pool;
+    struct AVRefStructPool *rpl_tab_pool;
 } HEVCLayerContext;
 
 typedef struct HEVCContext {
@@ -502,7 +502,7 @@ typedef struct HEVCContext {
     /** 1 if the independent slice segment header was successfully parsed */
     uint8_t slice_initialized;
 
-    struct ContainerFifo *output_fifo;
+    struct AVContainerFifo *output_fifo;
 
     HEVCParamSets ps;
     HEVCSEI sei;
@@ -531,7 +531,7 @@ typedef struct HEVCContext {
     HEVCDSPContext hevcdsp;
     VideoDSPContext vdsp;
     BswapDSPContext bdsp;
-    H274FilmGrainDatabase* h274db;  // Dynamically allocated due to large size.
+    H274FilmGrainDatabase h274db;
 
     /** used on BE to byteswap the lines for checksumming */
     uint8_t *checksum_buf;
