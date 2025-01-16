@@ -184,6 +184,49 @@ static void rnnoise_model_free(RNNModel *model)
     av_free(model);
 }
 
+static void quantize_to_signed_char(const float* data, int8_t* quantized_data, size_t size) {
+    // 找到数据的最大绝对值
+    float max_abs_value = 0.0f;
+    for (size_t i = 0; i < size; ++i) {
+        float abs_value = fabs(data[i]);  // 使用 fabs 计算绝对值
+        if (abs_value > max_abs_value) {
+            max_abs_value = abs_value;
+        }
+    }
+
+    // 计算缩放因子
+    float scale = 127.0f / max_abs_value;
+
+    // 将数据缩放到 [-128, 127] 并转换为 int8_t
+    for (size_t i = 0; i < size; ++i) {
+        quantized_data[i] = (int8_t)round(data[i] * scale);  // 使用 round 四舍五入
+    }
+}
+
+#define VAR_NAME_TO_STR(var) #var
+
+static void print_dense(int8_t* data, size_t len, FILE *txt_file, const char *var_name) {
+    printf("\nstatic const rnn_weight %s[%d] = {\n", var_name, len);
+    fprintf(txt_file, "%s%s%s%d%s", "\nstatic const rnn_weight ", var_name, "[", len, "] = {\n");
+    for (int i = 0; i < len; ++i) {
+      if (i == 0) {
+        printf("   %d, ", data[i]);
+        fprintf(txt_file, "   %d, ", data[i]);
+      } else if (i % 8 == 0) {
+        printf("\n   %d, ", data[i]);
+        fprintf(txt_file, "\n   %d, ", data[i]);
+      } else if (i == len - 1) {
+        printf("%d", data[i]);
+        fprintf(txt_file, "%d", data[i]);
+      } else {
+        printf("%d, ", data[i]);
+        fprintf(txt_file, "%d, ", data[i]);
+      }
+    }
+    printf("\n};\n");
+    fprintf(txt_file, "%s", "\n};\n");
+}
+
 static int rnnoise_model_from_file(FILE *f, RNNModel **rnn)
 {
     RNNModel *ret = NULL;
@@ -238,6 +281,44 @@ static int rnnoise_model_from_file(FILE *f, RNNModel **rnn)
     default: \
         name = ACTIVATION_TANH; \
     } \
+    } while (0)
+
+/*
+    int len = 0;
+    signed char input_dense_bias[24];
+    signed char input_dense_weights[1008];
+    len = input_dense->nb_neurons;
+    quantize_to_signed_char(input_dense->bias, &input_dense_bias[0], len);
+*/
+    
+// print_dense(input_dense_bias, len, int8_weights);
+
+/*
+  Q_BIAS_ARRAY(input_dense, input_dense->nb_neurons);
+  PRINT_DENSE(q_bias, len, file);
+*/
+#define PRINT_DENSE(bias, len, file, var_name) do { \
+    print_dense(bias, len, file, var_name); \
+    } while (0)
+
+#define Q_ARRAY(float_array, len, q_array) do { \
+    signed char *values = av_calloc((len), sizeof(signed char)); \
+    if (!values) { \
+        rnnoise_model_free(ret); \
+        return AVERROR(ENOMEM); \
+    } \
+    q_array = values; \
+    quantize_to_signed_char(float_array, q_array, len); \
+    } while (0)
+
+#define Q_BIAS_ARRAY(dense, len, q_bias) do { \
+    signed char *values = av_calloc((len), sizeof(signed char)); \
+    if (!values) { \
+        rnnoise_model_free(ret); \
+        return AVERROR(ENOMEM); \
+    } \
+    q_bias = values; \
+    quantize_to_signed_char(dense->bias, q_bias, len); \
     } while (0)
 
 #define INPUT_ARRAY(name, len) do { \
@@ -322,6 +403,106 @@ static int rnnoise_model_from_file(FILE *f, RNNModel **rnn)
         return AVERROR(EINVAL);
     }
 
+/*
+    // ToDo: quantize
+    FILE *int8_weights;
+    // int8_weights = avpriv_fopen_utf8("../rnnoise-models/somnolent-hogwash-2018-09-01/sh_int8.txt", "w");
+    // int8_weights = avpriv_fopen_utf8("../rnnoise-models/marathon-prescription-2018-08-29/mp_int8.txt", "w");
+    // int8_weights = avpriv_fopen_utf8("../rnnoise-models/leavened-quisling-2018-08-31/lq_int8.txt", "w");
+    // int8_weights = avpriv_fopen_utf8("../rnnoise-models/conjoined-burgers-2018-08-28/cb_int8.txt", "w");
+    int8_weights = avpriv_fopen_utf8("../rnnoise-models/beguiling-drafter-2018-08-30/bd_int8.txt", "w");
+    
+    if (!int8_weights) {
+        // av_log(ctx, AV_LOG_ERROR, "Failed to open weight file: %s\n", s->model_name);
+        return AVERROR(EINVAL);
+    }
+
+    int len = 0;
+
+    signed char *input_dense_bias;
+    signed char *input_dense_weights;
+
+    len = input_dense->nb_neurons;
+    Q_BIAS_ARRAY(input_dense, len, input_dense_bias);
+    PRINT_DENSE(input_dense_bias, len, int8_weights, VAR_NAME_TO_STR(input_dense_bias));
+
+    len = input_dense->nb_inputs * input_dense->nb_neurons;
+    Q_ARRAY(input_dense->input_weights, len, input_dense_weights);
+    PRINT_DENSE(input_dense_weights, len , int8_weights, VAR_NAME_TO_STR(input_dense_weights));
+
+    signed char *vad_gru_weights;
+    signed char *vad_gru_recurrent_weights;
+    signed char *vad_gru_bias;
+
+    len = 3 * vad_gru->nb_inputs * vad_gru->nb_neurons;
+    Q_ARRAY(vad_gru->input_weights, len, vad_gru_weights);
+    PRINT_DENSE(vad_gru_weights, len , int8_weights, VAR_NAME_TO_STR(vad_gru_weights));
+
+    len = 3 * vad_gru->nb_neurons * vad_gru->nb_neurons;
+    Q_ARRAY(vad_gru->recurrent_weights, len, vad_gru_recurrent_weights);
+    PRINT_DENSE(vad_gru_recurrent_weights, len , int8_weights, VAR_NAME_TO_STR(vad_gru_recurrent_weights));
+
+    len = 3 * vad_gru->nb_neurons;
+    Q_ARRAY(vad_gru->bias, len, vad_gru_bias);
+    PRINT_DENSE(vad_gru_bias, len , int8_weights, VAR_NAME_TO_STR(vad_gru_bias));
+
+
+    signed char *noise_gru_weights;
+    signed char *noise_gru_recurrent_weights;
+    signed char *noise_gru_bias;
+
+    len = 3 * noise_gru->nb_inputs * noise_gru->nb_neurons;
+    Q_ARRAY(noise_gru->input_weights, len, noise_gru_weights);
+    PRINT_DENSE(noise_gru_weights, len , int8_weights, VAR_NAME_TO_STR(noise_gru_weights));
+
+    len = 3 * noise_gru->nb_neurons * noise_gru->nb_neurons;
+    Q_ARRAY(noise_gru->recurrent_weights, len, noise_gru_recurrent_weights);
+    PRINT_DENSE(noise_gru_recurrent_weights, len , int8_weights, VAR_NAME_TO_STR(noise_gru_recurrent_weights));
+
+    len = 3 * noise_gru->nb_neurons;
+    Q_ARRAY(noise_gru->bias, len, noise_gru_bias);
+    PRINT_DENSE(noise_gru_bias, len , int8_weights, VAR_NAME_TO_STR(noise_gru_bias));
+
+
+    signed char *denoise_gru_weights;
+    signed char *denoise_gru_recurrent_weights;
+    signed char *denoise_gru_bias;
+
+    len = 3 * denoise_gru->nb_inputs * denoise_gru->nb_neurons;
+    Q_ARRAY(denoise_gru->input_weights, len, denoise_gru_weights);
+    PRINT_DENSE(denoise_gru_weights, len , int8_weights, VAR_NAME_TO_STR(denoise_gru_weights));
+
+    len = 3 * denoise_gru->nb_neurons * denoise_gru->nb_neurons;
+    Q_ARRAY(denoise_gru->recurrent_weights, len, denoise_gru_recurrent_weights);
+    PRINT_DENSE(denoise_gru_recurrent_weights, len , int8_weights, VAR_NAME_TO_STR(denoise_gru_recurrent_weights));
+
+    len = 3 * denoise_gru->nb_neurons;
+    Q_ARRAY(denoise_gru->bias, len, denoise_gru_bias);
+    PRINT_DENSE(denoise_gru_bias, len , int8_weights, VAR_NAME_TO_STR(denoise_gru_bias));
+
+
+    signed char *denoise_output_bias;
+    signed char *denoise_output_weights;   
+    len = denoise_output->nb_neurons;
+    Q_ARRAY(denoise_output->bias, len, denoise_output_bias);
+    PRINT_DENSE(denoise_output_bias, len , int8_weights, VAR_NAME_TO_STR(denoise_output_bias));
+    len = denoise_output->nb_neurons * denoise_output->nb_inputs;
+    Q_ARRAY(denoise_output->input_weights, len, denoise_output_weights);
+    PRINT_DENSE(denoise_output_weights, len , int8_weights, VAR_NAME_TO_STR(denoise_output_weights));
+
+
+    signed char *vad_output_bias;
+    signed char *vad_output_weights;   
+    len = vad_output->nb_neurons;
+    Q_ARRAY(vad_output->bias, len, vad_output_bias);
+    PRINT_DENSE(vad_output_bias, len , int8_weights, VAR_NAME_TO_STR(vad_output_bias));
+    len = vad_output->nb_neurons * vad_output->nb_inputs;
+    Q_ARRAY(vad_output->input_weights, len, vad_output_weights);
+    PRINT_DENSE(vad_output_weights, len , int8_weights, VAR_NAME_TO_STR(vad_output_weights));
+
+
+    fclose(int8_weights);
+*/
     *rnn = ret;
 
     return 0;
